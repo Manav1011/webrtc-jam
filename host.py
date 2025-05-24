@@ -139,6 +139,7 @@ async def stream_audio(participant_id, data_channel):
                     break
                 if is_silence(pcm_data):
                     print("silence")
+                    continue
                 else:
                     print("No silence")
                 # # Check if the audio data is silence
@@ -187,7 +188,7 @@ async def connect():
     sources = list_pulse_sources()
     DEVICE = select_source(sources)
     print(f"\nSelected DEVICE: {DEVICE}")
-    uri = "ws://localhost:8765"
+    uri = "wss://jam-ws-server.onrender.com/ws"
     async with websockets.connect(uri) as websocket:
         channel_id = input("Add Channel ID: ")
         message = {
