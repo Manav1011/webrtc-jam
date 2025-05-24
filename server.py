@@ -1,125 +1,86 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from typing import Dict, Optional, List, Set
+import asyncio
 import json
-import uuid
-from fastapi.middleware.cors import CORSMiddleware
+import websockets
 
-app = FastAPI()
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# hosts = {}
+active_channels = {}
+clients = {}
 
-# Store WebSocket connections and their offers/answers
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
-        self.offers: Dict[str, str] = {}
-        self.active_channel_ids: Set[str] = set()  # Track active channel IDs
-
-    async def connect(self, websocket: WebSocket, channel_id: str, client_type: str):
-        await websocket.accept()
-        if channel_id not in self.active_connections:
-            self.active_connections[channel_id] = {}
-        self.active_connections[channel_id][client_type] = websocket
+async def remove_from_dict(websocket):
+    host_key = next((k for k, v in active_channels.items() if v == websocket), None)
+    if host_key:
+        del active_channels[host_key]
         
-        # Add channel to active list when host connects
-        if client_type == "host":
-            self.active_channel_ids.add(channel_id)
-            print(f"Host connected with channel ID: {channel_id}")
-            print(f"Active channels: {self.active_channel_ids}")
+    client_key = next((k for k, v in clients.items() if v == websocket), None)
+    if client_key:
+        del clients[client_key]
+    if websocket in clients:
+        del clients[websocket]
+    print(f"Removed {websocket} from all dictionaries.")
 
-    async def disconnect(self, channel_id: str, client_type: str):
-        if channel_id in self.active_connections:
-            if client_type in self.active_connections[channel_id]:
-                del self.active_connections[channel_id][client_type]
-            if not self.active_connections[channel_id]:
-                del self.active_connections[channel_id]
-            
-            # Remove channel from active list when host disconnects
-            if client_type == "host":
-                self.active_channel_ids.discard(channel_id)
-                if channel_id in self.offers:
-                    del self.offers[channel_id]
-                print(f"Host disconnected from channel ID: {channel_id}")
-                print(f"Active channels: {self.active_channel_ids}")
-
-    async def send_message(self, message: str, channel_id: str, client_type: str):
-        if channel_id in self.active_connections:
-            if client_type in self.active_connections[channel_id]:
-                await self.active_connections[channel_id][client_type].send_text(message)
-
-    def get_active_channels(self) -> List[str]:
-        return list(self.active_channel_ids)
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/{channel_id}/{client_type}")
-async def websocket_endpoint(websocket: WebSocket, channel_id: str, client_type: str):
-    await manager.connect(websocket, channel_id, client_type)
+# Handler for each client connection
+async def echo(websocket, path):
     try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if client_type == "host":
-                if message["type"] == "offer":
-                    # Store the offer and send it to the user if connected
-                    manager.offers[channel_id] = message["offer"]
-                    await manager.send_message(
-                        json.dumps({"type": "offer", "offer": message["offer"]}),
-                        channel_id,
-                        "user"
-                    )
-            
-            elif client_type == "user":
-                if message["type"] == "answer":
-                    # Forward the answer to the host
-                    await manager.send_message(
-                        json.dumps({"type": "answer", "answer": message["answer"]}),
-                        channel_id,
-                        "host"
-                    )
-                elif message["type"] == "get_offer":
-                    # Send stored offer to user
-                    if channel_id in manager.offers:
-                        await manager.send_message(
-                            json.dumps({"type": "offer", "offer": manager.offers[channel_id]}),
-                            channel_id,
-                            "user"
-                        )
-                elif message["type"] == "get_channels":
-                    # Send list of active channels to the user
-                    active_channels = manager.get_active_channels()
-                    await websocket.send_text(
-                        json.dumps({"type": "channels", "channels": active_channels})
-                    )
-    
-    except WebSocketDisconnect:
-        await manager.disconnect(channel_id, client_type)
+        async for message in websocket:
+            message = json.loads(message)
+            if message["client"] == "host":
+                if message['type'] == 'connection':
+                    active_channels[message['channel_id']] = websocket
+                if message["type"] == 'set_offer':
+                    participant_id = message['participant_id']
+                    client_socket = clients[participant_id]
+                    message = {
+                        "type":"set_offer",
+                        "sdp":message['sdp']
+                    }
+                    await client_socket.send(json.dumps(message))
+                    
+                    
+            elif message["client"] == "participant":
+                if message['type'] == 'connection':
+                    channel_id = message['channel_id']
+                    if channel_id in active_channels:
+                        host = active_channels[channel_id]
+                        participant_id = message['participant_id']
+                        # set client config
+                        clients[participant_id] = websocket
+                        # Clients wants to connect
+                        message = {
+                            'type':'send_offer',
+                            "participant_id":participant_id
+                        }
+                        # Send to the host to generate RTC object
+                        await host.send(json.dumps(message))
+                    else:
+                        await websocket.send(json.dumps({
+                            "type": "not_found",
+                            "message": f"Channel ID {channel_id} not found."
+                        }))
+                if message['type'] == 'set_answer':
+                    host = active_channels[message['channel_id']]
+                    message = {
+                        "type":"set_answer",
+                        "sdp": message["sdp"],
+                        "participant_id":message["participant_id"]
+                    }
+                    await host.send(json.dumps(message))
+                    
+    except websockets.exceptions.ConnectionClosedOK:
+        await remove_from_dict(websocket)
+        print("WebSocket closed normally.")
+    except websockets.exceptions.ConnectionClosedError:
+        await remove_from_dict(websocket)
+        print("WebSocket closed with error.")
+    finally:
+        await remove_from_dict(websocket)
+        print("WebSocket connection closed.")
+# Main function to start the WebSocket server
+async def main():
+    async with websockets.serve(echo, "0.0.0.0", 8765):
+        print("WebSocket server started on ws://localhost:8765")
+        await asyncio.Future()  # run forever
 
-@app.websocket("/ws/discover")
-async def discover_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message["type"] == "get_channels":
-                # Send list of active channels to the user
-                active_channels = manager.get_active_channels()
-                await websocket.send_text(
-                    json.dumps({"type": "channels", "channels": active_channels})
-                )
-    except WebSocketDisconnect:
-        pass
-
+# Run the server
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    asyncio.run(main())

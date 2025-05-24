@@ -1,289 +1,225 @@
 import asyncio
-import json
 import websockets
-from aiortc import RTCPeerConnection, RTCSessionDescription
-import time
-import sys
-import os
+import uuid
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
+import subprocess
+import json
 
-async def discover_channels():
-    """Connect to the discovery endpoint and retrieve available channels"""
-    channels = []
-    try:
-        async with websockets.connect("ws://localhost:8001/ws/discover") as ws:
-            # Request available channels
-            await ws.send(json.dumps({"type": "get_channels"}))
-            
-            # Wait for response
-            response = await ws.recv()
-            data = json.loads(response)
-            
-            if data["type"] == "channels":
-                channels = data["channels"]
-    except Exception as e:
-        print(f"Error discovering channels: {e}")
-    
-    return channels
-
-async def select_channel():
-    """Continuously update channel list and prompt user for selection"""
-    while True:
-        # Discover available channels
-        print("\nDiscovering available channels...")
-        channels = await discover_channels()
-        
-        if not channels:
-            print("No active channels found. Retrying in 5 seconds...")
-            await asyncio.sleep(5)
-            continue
-        
-        print("\nAvailable channels:")
-        for i, channel in enumerate(channels, 1):
-            print(f"{i}. {channel}")
-        
-        # Use asyncio.gather with a timeout to handle both user input and refreshing the list
-        try:
-            selection_task = asyncio.create_task(prompt_for_selection(channels))
-            refresh_task = asyncio.create_task(asyncio.sleep(10))  # Refresh list every 10 seconds
-            
-            done, pending = await asyncio.wait(
-                [selection_task, refresh_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-            
-            # If selection was made, return the channel
-            if selection_task in done:
-                result = selection_task.result()
-                if result:
-                    return result
-            
-            # If timeout occurred, loop continues to refresh the channel list
-            
-        except asyncio.CancelledError:
-            continue
-
-async def prompt_for_selection(channels):
-    """Prompt user to select a channel"""
-    # This uses a separate thread to not block the event loop
-    loop = asyncio.get_event_loop()
-    selection = await loop.run_in_executor(
-        None, 
-        lambda: input("\nSelect a channel (number) or 'q' to quit [press Enter to refresh list]: ")
+ice_servers = [
+    RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+    RTCIceServer(
+        urls=["turn:your.turn.server:3478"],
+        username="your_username",
+        credential="your_password"
     )
-    
-    if selection.lower() == 'q':
-        print("Exiting...")
-        sys.exit(0)
-    
-    if not selection:  # Empty input, user wants to refresh
-        return None
-    
-    try:
-        index = int(selection) - 1
-        if 0 <= index < len(channels):
-            channel_id = channels[index]
-            print(f"Selected channel: {channel_id}")
-            return channel_id
-        else:
-            print("Invalid selection. Please try again.")
-            return None
-    except ValueError:
-        print("Please enter a valid number or 'q' to quit.")
-        return None
+]
+rtc_config = RTCConfiguration(iceServers=ice_servers)
 
-async def run_rtc_connection(channel_id):
-    """Establish and maintain RTC connection with the host"""
-    # Create peer connection
-    pc = RTCPeerConnection()
-    data_channel = None
-    connection_established = False
-    connection_closed = False
-    
-    # Set up connection state change monitoring
-    @pc.on("connectionstatechange")
-    def on_connectionstatechange():
-        print(f"Connection state changed to: {pc.connectionState}")
-        if pc.connectionState in ["failed", "closed"]:
-            nonlocal connection_closed
-            print(f"Connection {pc.connectionState} according to RTCPeerConnection state")
-            connection_closed = True
-    
-    @pc.on("iceconnectionstatechange")
-    def on_iceconnectionstatechange():
-        print(f"ICE connection state changed to: {pc.iceConnectionState}")
-        if pc.iceConnectionState in ["failed", "closed", "disconnected"]:
-            print(f"ICE connection {pc.iceConnectionState}")
-    
-    # Handle data channel
-    @pc.on("datachannel")
-    def on_datachannel(channel):
-        nonlocal data_channel
-        data_channel = channel
-        
-        @channel.on("message")
-        def on_message(message):
-            print(f"Received from host: {message}")
-            if message.startswith("PING"):
-                print(f"[{time.strftime('%H:%M:%S')}] Received {message} from host")
-                channel.send("PONG")
-                print(f"[{time.strftime('%H:%M:%S')}] Sent PONG response to host")
+class AudioPlayer:
+    def __init__(self, sample_rate=48000, channels=2):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.process = None
+        self.start_process()
 
-        @channel.on("open")
-        def on_open():
-            print("Data channel is open")
-            channel.send("Hello from user!")
-
-        @channel.on("close")
-        def on_close():
-            nonlocal connection_closed
-            print("Data channel closed by host")
-            connection_closed = True
-
-    # Connect to signaling server and establish WebRTC connection
-    websocket = None
-    try:
-        websocket = await websockets.connect(f"ws://localhost:8001/ws/{channel_id}/user")
-        
-        # Request the offer
-        await websocket.send(json.dumps({"type": "get_offer"}))
-        
-        print("Waiting for host's offer...")
-        
-        async for message in websocket:
-            data = json.loads(message)
-            if data["type"] == "offer":
-                print("Received offer, creating answer...")
-                offer = RTCSessionDescription(
-                    sdp=data["offer"]["sdp"],
-                    type=data["offer"]["type"]
-                )
-                await pc.setRemoteDescription(offer)
-                
-                # Create answer
-                answer = await pc.createAnswer()
-                await pc.setLocalDescription(answer)
-                
-                # Send answer
-                await websocket.send(json.dumps({
-                    "type": "answer",
-                    "answer": {
-                        "sdp": pc.localDescription.sdp,
-                        "type": pc.localDescription.type
-                    }
-                }))
-                
-                print("Answer sent, connection established!")
-                connection_established = True
-                break
-    finally:
-        # Close WebSocket connection after establishing WebRTC connection
-        if websocket and connection_established:
-            print("Closing WebSocket connection to signaling server...")
-            await websocket.close()
-            print("WebSocket connection closed")
-
-    # Keep the P2P connection alive (outside WebSocket context)
-    print("P2P connection active, sending/receiving through data channel...")
-    print(f"Initial connection state: {pc.connectionState}")
-    print(f"Initial ICE connection state: {pc.iceConnectionState}")
-    
-    # Monitor connection status
-    ping_missed_count = 0
-    last_ping_time = time.time()
-    
-    while True:
+    def start_process(self):
+        if self.process:
+            self.stop()
         try:
-            await asyncio.sleep(1)
-            
-            # Check RTCPeerConnection state
-            if pc.connectionState in ["failed", "closed"]:
-                print(f"Connection {pc.connectionState} - reconnecting")
-                return False
-                
-            # Check ICE connection state
-            if pc.iceConnectionState in ["failed", "disconnected"]:
-                print(f"ICE connection {pc.iceConnectionState} - reconnecting")
-                return False
-            
-            # Check for explicit connection closure
-            if connection_closed:
-                print("Connection explicitly closed by host or data channel")
-                return False  # Signal to restart
-            
-            # Check data channel state
-            if data_channel and data_channel.readyState != "open":
-                print(f"Data channel state: {data_channel.readyState}")
-                return False  # Signal to restart
-            
-            # Check for missed pings (if we haven't received a ping for 15 seconds)
-            current_time = time.time()
-            if data_channel and data_channel.readyState == "open" and current_time - last_ping_time > 15:
-                ping_missed_count += 1
-                print(f"No ping received for {int(current_time - last_ping_time)} seconds (warning {ping_missed_count}/3)")
-                print(f"Connection state: {pc.connectionState}, ICE state: {pc.iceConnectionState}, Channel state: {data_channel.readyState}")
-                
-                # After 3 missed ping cycles (45 seconds total), consider connection lost
-                if ping_missed_count >= 3:
-                    print("Connection lost - no pings received for too long")
-                    return False  # Signal to restart
-                
-                # Reset timer to not spam warnings
-                last_ping_time = current_time
-            
-            # Reset ping counter if we see any activity
-            if data_channel and data_channel.readyState == "open" and not connection_closed:
-                if hasattr(data_channel, '_lastActivity') and data_channel._lastActivity > last_ping_time:
-                    last_ping_time = data_channel._lastActivity
-                    ping_missed_count = 0
-                    
+            self.process = subprocess.Popen(
+                [
+                    "paplay",
+                    "--rate", str(self.sample_rate),
+                    "--channels", str(self.channels),
+                    "--format=s16le",
+                    "--raw",
+                    "--latency-msec=1",
+                    "--process-time-msec=1"
+                ],
+                stdin=subprocess.PIPE,
+                bufsize=0,
+            )
         except Exception as e:
-            print(f"Error in connection monitor: {e}")
-            await asyncio.sleep(5)
-            return False  # Signal to restart on error
+            print(f"Error starting audio process: {e}")
+            self.process = None
 
-async def run_user(channel_id: str = None):
-    while True:  # Main application loop
+    def play(self, audio_data):
         try:
-            # If no channel ID is provided, let user select one
-            if not channel_id:
-                channel_id = await select_channel()
-                if not channel_id:  # User quit
-                    return
-            
-            # Establish and maintain RTC connection
-            connection_ok = await run_rtc_connection(channel_id)
-            
-            if not connection_ok:
-                print("\n--- Connection lost, restarting ---\n")
-                # Reset channel_id to force rediscovery
-                channel_id = None
-                # Small delay before restarting
-                await asyncio.sleep(2)
+            print(audio_data)
+            if self.process and self.process.poll() is None:
+                self.process.stdin.write(audio_data)
+                self.process.stdin.flush()
+                del audio_data
             else:
-                # If connection ended normally, exit loop
-                break
-                
+                self.start_process()
+        except BrokenPipeError:
+            self.stop()
+            self.start_process()
         except Exception as e:
-            print(f"Error in main loop: {e}")
-            # Reset channel_id to force rediscovery
-            channel_id = None
-            await asyncio.sleep(2)
+            print(f"Error playing audio: {e}")
+            self.stop()
+                
+    def stop(self):
+        if self.process:
+            try:
+                if self.process.poll() is None:
+                    try:
+                        self.process.stdin.close()
+                    except:
+                        pass
+                    try:
+                        self.process.terminate()
+                        self.process.wait(timeout=1)
+                    except:
+                        self.process.kill()
+            except Exception as e:
+                print(f"Error stopping audio process: {e}")
+            self.process = None
 
-if __name__ == "__main__":
-    import sys
-    
-    channel_id = None
-    if len(sys.argv) == 2:
-        channel_id = sys.argv[1]
+async def gather_complete(pc):
+    await asyncio.sleep(0.1)
+    while pc.iceGatheringState != "complete":
+        await asyncio.sleep(0.1)
+
+async def cleanup_connection(client_pc, audio_player, in_progress=False):
+    """Helper function to clean up resources with protection against double cleanup"""
+    if getattr(client_pc, '_cleanup_in_progress', False) and in_progress:
+        print("Cleanup already in progress")
+        return
+
+    if in_progress:
+        setattr(client_pc, '_cleanup_in_progress', True)
     
     try:
-        asyncio.run(run_user(channel_id))
-    except KeyboardInterrupt:
-        print("\nExiting...")
+        if audio_player:
+            audio_player.stop()
+            
+        if client_pc:
+            # Clear any pending operations on transceivers
+            for transceiver in client_pc.getTransceivers():
+                if transceiver.sender:
+                    try:
+                        await transceiver.sender.replaceTrack(None)
+                    except:
+                        pass
+
+            if client_pc.connectionState != "closed":
+                try:
+                    await client_pc.close()
+                    await asyncio.sleep(0.2)  # Give time for cleanup
+                except Exception as e:
+                    print(f"Error closing peer connection: {e}")
+    finally:
+        if in_progress:
+            setattr(client_pc, '_cleanup_in_progress', False)
+
+async def connect():
+    audio_player = AudioPlayer()
+    uri = "ws://localhost:8765"
+    client_pc = None
+    
+    try:
+        async with websockets.connect(uri) as websocket:
+            client_pc = RTCPeerConnection(rtc_config)
+            
+            @client_pc.on("iceconnectionstatechange")
+            def on_iceconnectionstatechange():
+                print(f"ICE connection state: {client_pc.iceConnectionState}")
+                
+            @client_pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                print(f"Connection state changed to: {client_pc.connectionState}")
+                if client_pc.connectionState in ["failed", "closed", "disconnected"]:
+                    await cleanup_connection(client_pc, audio_player, True)
+            
+            @client_pc.on("datachannel")
+            def on_datachannel(channel):
+                print(f"Data channel {channel.label} received")
+
+                @channel.on("message")
+                def on_message(message):
+                    try:
+                        if channel.readyState == "open":
+                            audio_player.play(message)
+                            del message  # Help with garbage collection
+                    except Exception as e:
+                        if "not connected" not in str(e):  # Ignore expected disconnection errors
+                            print(f"Error handling audio message: {e}")
+
+                @channel.on("close")
+                def on_close():
+                    print("Data channel closed")
+                    audio_player.stop()
+            
+            channel_id = input("Enter Channel ID to join: ")
+            participant_id = str(uuid.uuid4())
+            
+            try:
+                message = {
+                    "client":"participant",
+                    "type": "connection",
+                    "channel_id":channel_id,
+                    "participant_id":participant_id
+                }
+                
+                await websocket.send(json.dumps(message))
+                
+                async for message in websocket:
+                    try:
+                        data = json.loads(message)
+                        if data['type'] == 'set_offer':
+                            offer = RTCSessionDescription(
+                                sdp=data["sdp"],
+                                type='offer'
+                            )
+                            
+                            await client_pc.setRemoteDescription(offer)
+                            answer = await client_pc.createAnswer()
+                            await client_pc.setLocalDescription(answer)
+                            await gather_complete(client_pc)
+                            
+                            message = {
+                                'client':'participant',
+                                'type':'set_answer',
+                                'channel_id':channel_id,
+                                'participant_id':participant_id,
+                                "sdp":client_pc.localDescription.sdp
+                            }
+                            await websocket.send(json.dumps(message))
+                            
+                        elif data['type'] == 'not_found':
+                            print(f"Channel ID {channel_id} not found. Please enter a valid Channel ID.")
+                            channel_id = input("Enter Channel ID to join: ")
+                            message = {
+                                "client":"participant",
+                                "type": "connection",
+                                "channel_id":channel_id,
+                                "participant_id":participant_id
+                            }
+                            await websocket.send(json.dumps(message))
+                    except Exception as e:
+                        print(f"Error processing message: {e}")
+                        await cleanup_connection(client_pc, audio_player, True)
+                        break
+                
+                # Keep connection alive
+                while True:
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                print(f"Connection error: {e}")
+                await cleanup_connection(client_pc, audio_player, True)
+                
     except Exception as e:
         print(f"Fatal error: {e}")
-        sys.exit(1)
+    finally:
+        await cleanup_connection(client_pc, audio_player, True)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(connect())
+    except KeyboardInterrupt:
+        print("Stopping...")
+    finally:
+        # Clean up any remaining resources here if needed
+        pass
