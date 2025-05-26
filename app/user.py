@@ -214,12 +214,3 @@ async def connect():
         print(f"Fatal error: {e}")
     finally:
         await cleanup_connection(client_pc, audio_player, True)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(connect())
-    except KeyboardInterrupt:
-        print("Stopping...")
-    finally:
-        # Clean up any remaining resources here if needed
-        pass

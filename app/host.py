@@ -5,6 +5,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCCo
 import subprocess
 import numpy as np
 import json
+from threading import Lock
 
 participants = {}
 data_channels = {}
@@ -136,18 +137,19 @@ async def stream_audio(participant_id, data_channel):
                 )
                 if not pcm_data:
                     break
-                # if is_silence(pcm_data):
-                #     print("silence")
-                #     continue
-                # else:
-                #     print("No silence")
-                # Check if the audio data is silence
                 if is_silence(pcm_data):
-                    silence_count += 1
-                    if silence_count >= 5:  # Skip if we've seen 5 consecutive silence chunks                        
-                        continue
+                    print("silence")
+                    continue
                 else:
-                    silence_count = 0  # Reset silence counter when we get non-silence
+                    print("No silence")
+                # # Check if the audio data is silence
+                # if is_silence(pcm_data):
+                #     silence_count += 1
+                #     if silence_count >= 5:  # Skip if we've seen 5 consecutive silence chunks
+                #         print("silence")
+                #         continue
+                # else:
+                #     silence_count = 0  # Reset silence counter when we get non-silence
 
                 # Double check state before sending
                 if data_channel.readyState == "open":
@@ -183,8 +185,11 @@ async def stream_audio(participant_id, data_channel):
 
 async def connect():
     global DEVICE
-    sources = list_pulse_sources()
-    DEVICE = select_source(sources)
+    # sources = list_pulse_sources()
+    # DEVICE = select_source(sources)
+    # Usage
+    DEVICE = get_default_monitor()    
+
     print(f"\nSelected DEVICE: {DEVICE}")
     uri = "wss://jam-ws-server.onrender.com/ws"
     async with websockets.connect(uri) as websocket:
@@ -267,6 +272,15 @@ async def connect():
         while True:
             await asyncio.sleep(1)
 
+def get_default_monitor() -> str:
+    """Get the name of the default monitor source."""
+    output = subprocess.check_output(["pactl", "info"]).decode()
+    for line in output.splitlines():
+        if "Default Sink:" in line:
+            default_sink = line.split(":")[1].strip()
+            return f"{default_sink}.monitor"
+    raise RuntimeError("Default sink not found")
+
 def list_pulse_sources() -> list[tuple[int, str]]:
     """Return a list of PulseAudio source index and names."""
     output = subprocess.check_output(["pactl", "list", "short", "sources"]).decode()
@@ -292,6 +306,3 @@ def select_source(sources: list[tuple[int, str]]) -> str:
         except ValueError:
             pass
         print("Invalid choice. Try again.")
-
-if __name__ == "__main__":
-    asyncio.run(connect())

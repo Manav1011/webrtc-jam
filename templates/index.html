@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Audio Jam</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --color-orange: #FF5F1F;
+            --color-blue: #1B365D;
+            --color-navy: #0A1F3F;
+            --color-black: #000000;
+        }
+
+        * {
+            font-family: 'Poppins', sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, var(--color-black) 0%, var(--color-navy) 50%, var(--color-blue) 100%);
+            min-height: 100dvh;
+            overflow-x: hidden;
+            color: #ffffff;
+        }
+
+        .bg-pattern {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100dvh;
+            background: 
+                radial-gradient(circle at 50% 50%, var(--color-blue) 0%, rgba(0, 0, 0, 0.9) 100%),
+                url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%231B365D' fill-opacity='0.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.8;
+            z-index: -1;
+        }
+
+        .floating-notes {
+            position: fixed;
+            width: 100%;
+            height: 100dvh;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .note {
+            position: absolute;
+            opacity: 0.6;
+            animation: float 15s linear infinite;
+            font-size: 2rem;
+        }
+
+        .note-orange {
+            color: var(--color-orange);
+            text-shadow: 0 0 10px rgba(255, 95, 31, 0.3);
+        }
+
+        .note-white {
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+        }
+
+        @keyframes float {
+            0% {
+                transform: translateY(100dvh) translateX(-50%);
+                opacity: 0;
+            }
+            10% {
+                opacity: 0.6;
+            }
+            90% {
+                opacity: 0.6;
+            }
+            100% {
+                transform: translateY(-100px) translateX(50%);
+                opacity: 0;
+            }
+        }
+
+        .role-btn {
+            background: rgba(27, 54, 93, 0.3);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 95, 31, 0.1);
+        }
+
+        .role-btn:hover:not(.disabled) {
+            background: rgba(255, 95, 31, 0.1);
+            border-color: rgba(255, 95, 31, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .role-btn.active {
+            background: rgba(255, 95, 31, 0.15);
+            border-color: var(--color-orange);
+            transform: translateY(-2px);
+            color: var(--color-orange) !important;
+        }
+
+        .role-btn.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .input-glow {
+            background: rgba(27, 54, 93, 0.3);
+            border: 1px solid rgba(255, 95, 31, 0.1);
+            color: white;
+            outline: none;
+        }
+
+        .input-glow:focus {
+            border-color: var(--color-orange);
+            box-shadow: 0 0 15px rgba(255, 95, 31, 0.2);
+        }
+
+        .input-glow::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .btn-gradient {
+            background: var(--color-orange);
+            border: none;
+            transition: all 0.3s ease;
+        }
+
+        .btn-gradient:hover:not(:disabled) {
+            background: #ff4500;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 95, 31, 0.3);
+        }
+
+        .btn-gradient:disabled {
+            background: rgba(255, 95, 31, 0.3);
+            cursor: not-allowed;
+        }
+
+        .status-card {
+            background: rgba(27, 54, 93, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 95, 31, 0.1);
+        }
+
+        .status-card .bg-gray-900\/30 {
+            background: rgba(10, 31, 63, 0.5);
+            border: 1px solid rgba(255, 95, 31, 0.1);
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 95, 31, 0.7);
+            }
+            
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(255, 95, 31, 0);
+            }
+            
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 95, 31, 0);
+            }
+        }
+
+        .fade-up {
+            animation: fadeUp 0.3s ease forwards;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translate(-50%, 20px);
+            }
+            to {
+                opacity: 1;
+                transform: translate(-50%, 0);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .role-btn {
+                padding: 1rem;
+            }
+            
+            .role-btn span.text-lg {
+                font-size: 1rem;
+            }
+            
+            .role-btn span.text-xs {
+                font-size: 0.75rem;
+            }
+            
+            #channelId {
+                padding: 0.75rem 1rem;
+            }
+            
+            #connectBtn {
+                padding: 0.75rem 1rem;
+            }
+            
+            .status-card {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-pattern"></div>
+    <div class="floating-notes" id="floatingNotes"></div>
+
+    <div class="min-h-screen flex items-center justify-center p-4">
+        <div class="w-full max-w-md space-y-8">
+            <div class="text-center space-y-4">
+                <h1 class="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-orange-500">
+                    Audio Jam
+                </h1>
+                <p class="text-gray-400">Connect and stream audio in real-time</p>
+            </div>
+
+            <!-- Connection Form -->
+            <div id="connectionForm" class="space-y-8">
+                <div class="space-y-4">
+                    <label class="block text-sm font-medium text-gray-300">Choose Your Role</label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <button onclick="setMode('host')" id="hostBtn" 
+                            class="role-btn py-4 px-6 rounded-xl font-medium transition-all duration-300 text-gray-300">
+                            <span class="block text-lg">🎵 Host</span>
+                            <span class="block text-xs mt-1 text-gray-400">Create a session</span>
+                        </button>
+                        <button onclick="setMode('participant')" id="participantBtn"
+                            class="role-btn py-4 px-6 rounded-xl font-medium transition-all duration-300 text-gray-300">
+                            <span class="block text-lg">🎧 Join</span>
+                            <span class="block text-xs mt-1 text-gray-400">Enter a session</span>
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="space-y-3">
+                    <label class="block text-sm font-medium text-gray-300">Session ID</label>
+                    <input type="text" id="channelId" 
+                        class="w-full px-6 py-4 rounded-xl input-glow transition-all duration-300"
+                        placeholder="Enter session ID to connect">
+                </div>
+                
+                <button onclick="connect()" id="connectBtn" 
+                    class="w-full py-4 px-6 rounded-xl font-medium btn-gradient text-white
+                    disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none
+                    flex items-center justify-center space-x-2">
+                    <span>Start Jamming</span>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Status Display -->
+            <div id="statusDisplay" class="hidden space-y-6">
+                <div class="status-card rounded-xl p-6 space-y-6">
+                    <div class="flex items-center justify-between">
+                        <span class="text-gray-400">Session Status</span>
+                        <div class="flex items-center space-x-2">
+                            <div id="statusIndicator" class="w-2 h-2 rounded-full bg-orange-500 pulse"></div>
+                            <span id="connectionStatus" class="text-sm font-medium text-orange-400">Live</span>
+                        </div>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center p-3 rounded-lg bg-gray-900/30">
+                            <span class="text-gray-400">Role</span>
+                            <span id="modeDisplay" class="font-medium text-orange-400"></span>
+                        </div>
+                        <div class="flex justify-between items-center p-3 rounded-lg bg-gray-900/30">
+                            <span class="text-gray-400">Session ID</span>
+                            <span id="channelDisplay" class="font-medium text-orange-400"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <button onclick="disconnect()" id="disconnectBtn" 
+                    class="w-full py-4 px-6 rounded-xl font-medium transition-all duration-300
+                    bg-red-500/10 text-red-400 border border-red-500/20
+                    hover:bg-red-500/20 hover:border-red-500/30 flex items-center justify-center space-x-2">
+                    <span>End Session</span>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Create floating music notes
+        function createFloatingNotes() {
+            const notes = ['♪', '♫', '♩', '♬', '♭', '♮'];
+            const container = document.getElementById('floatingNotes');
+            let isOrange = true;
+            
+            setInterval(() => {
+                const note = document.createElement('div');
+                note.className = `note ${isOrange ? 'note-orange' : 'note-white'}`;
+                note.style.left = Math.random() * 100 + '%';
+                note.style.animationDuration = (10 + Math.random() * 15) + 's';
+                note.textContent = notes[Math.floor(Math.random() * notes.length)];
+                container.appendChild(note);
+                
+                isOrange = !isOrange; // Toggle between orange and white
+                
+                setTimeout(() => note.remove(), 15000);
+            }, 2000);
+        }
+
+        createFloatingNotes();
+
+        let currentMode = null;
+        let isConnected = false;
+        let serverMode = null;
+
+        async function checkServerMode() {
+            try {
+                const response = await fetch('/check-mode');
+                const data = await response.json();
+                serverMode = data.mode;
+                updateButtonStates();
+            } catch (error) {
+                console.error('Error checking server mode:', error);
+            }
+        }
+
+        function updateButtonStates() {
+            const hostBtn = document.getElementById('hostBtn');
+            const participantBtn = document.getElementById('participantBtn');
+            
+            if (serverMode === 'host') {
+                participantBtn.classList.add('disabled');
+                hostBtn.classList.remove('disabled');
+            } else if (serverMode === 'participant') {
+                hostBtn.classList.add('disabled');
+                participantBtn.classList.remove('disabled');
+            } else {
+                hostBtn.classList.remove('disabled');
+                participantBtn.classList.remove('disabled');
+            }
+        }
+
+        function setMode(mode) {
+            if (serverMode && serverMode !== mode) {
+                showError('Server is already running in ' + serverMode + ' mode. Please disconnect first.');
+                return;
+            }
+
+            currentMode = mode;
+            const hostBtn = document.getElementById('hostBtn');
+            const participantBtn = document.getElementById('participantBtn');
+            
+            if (mode === 'host') {
+                hostBtn.classList.add('active');
+                hostBtn.classList.remove('text-gray-300');
+                hostBtn.classList.add('text-white');
+                
+                participantBtn.classList.remove('active');
+                participantBtn.classList.add('text-gray-400');
+                participantBtn.classList.remove('text-gray-300');
+            } else {
+                participantBtn.classList.add('active');
+                participantBtn.classList.remove('text-gray-400');
+                participantBtn.classList.add('text-white');
+                
+                hostBtn.classList.remove('active');
+                hostBtn.classList.add('text-gray-400');
+                hostBtn.classList.remove('text-white');
+            }
+            
+            updateConnectButton();
+        }
+
+        function updateConnectButton() {
+            const channelId = document.getElementById('channelId').value.trim();
+            const connectBtn = document.getElementById('connectBtn');
+            connectBtn.disabled = !currentMode || !channelId;
+        }
+
+        document.getElementById('channelId').addEventListener('input', updateConnectButton);
+
+        async function connect() {
+            const channelId = document.getElementById('channelId').value.trim();
+            if (!currentMode || !channelId) return;
+
+            const connectBtn = document.getElementById('connectBtn');
+            connectBtn.disabled = true;
+            connectBtn.innerHTML = `
+                <svg class="animate-spin h-5 w-5 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>`;
+
+            try {
+                const response = await fetch('/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mode: currentMode,
+                        channel_id: channelId
+                    })
+                });
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    isConnected = true;
+                    serverMode = currentMode;
+                    updateUI();
+                    updateButtonStates();
+                    document.getElementById('modeDisplay').textContent = 
+                        currentMode === 'host' ? '🎵 Host' : '🎧 Participant';
+                    document.getElementById('channelDisplay').textContent = channelId;
+                } else {
+                    showError('Connection failed: ' + data.message);
+                }
+            } catch (error) {
+                showError('Connection error: ' + error.message);
+            } finally {
+                connectBtn.disabled = false;
+                connectBtn.innerHTML = `
+                    <span>Start Jamming</span>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                    </svg>`;
+            }
+        }
+
+        async function disconnect() {
+            if (!isConnected) return;
+
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            disconnectBtn.disabled = true;
+            disconnectBtn.innerHTML = `
+                <svg class="animate-spin h-5 w-5 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>`;
+
+            try {
+                const channelId = document.getElementById('channelDisplay').textContent;
+                const response = await fetch('/disconnect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mode: currentMode,
+                        channel_id: channelId
+                    })
+                });
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    isConnected = false;
+                    serverMode = null;
+                    updateUI();
+                    updateButtonStates();
+                } else {
+                    showError('Disconnect failed: ' + data.message);
+                }
+            } catch (error) {
+                showError('Disconnect error: ' + error.message);
+            } finally {
+                disconnectBtn.disabled = false;
+                disconnectBtn.innerHTML = `
+                    <span>End Session</span>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>`;
+            }
+        }
+
+        function showError(message) {
+            const toast = document.createElement('div');
+            toast.className = 'fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-red-500/10 text-red-400 px-6 py-3 rounded-xl border border-red-500/20 fade-up flex items-center space-x-2';
+            toast.innerHTML = `
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>${message}</span>`;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function updateUI() {
+            const connectionForm = document.getElementById('connectionForm');
+            const statusDisplay = document.getElementById('statusDisplay');
+            const statusIndicator = document.getElementById('statusIndicator');
+            const connectionStatus = document.getElementById('connectionStatus');
+
+            if (isConnected) {
+                connectionForm.classList.add('hidden');
+                statusDisplay.classList.remove('hidden');
+                statusIndicator.classList.add('bg-orange-500');
+                statusIndicator.classList.remove('bg-red-500');
+                connectionStatus.textContent = 'Live';
+                connectionStatus.className = 'text-sm font-medium text-orange-400';
+            } else {
+                connectionForm.classList.remove('hidden');
+                statusDisplay.classList.add('hidden');
+                statusIndicator.classList.remove('bg-orange-500');
+                statusIndicator.classList.add('bg-red-500');
+                connectionStatus.textContent = 'Disconnected';
+                connectionStatus.className = 'text-sm font-medium text-red-400';
+                
+                currentMode = null;
+                document.getElementById('hostBtn').className = 'role-btn py-4 px-6 rounded-xl font-medium transition-all duration-300 border border-blue-500/20 text-gray-300';
+                document.getElementById('participantBtn').className = 'role-btn py-4 px-6 rounded-xl font-medium transition-all duration-300 border border-purple-500/20 text-gray-300';
+                document.getElementById('channelId').value = '';
+                updateConnectButton();
+            }
+        }
+
+        // Check server mode on page load
+        window.addEventListener('load', checkServerMode);
+
+        window.addEventListener('beforeunload', async (e) => {
+            if (isConnected) {
+                e.preventDefault();
+                e.returnValue = '';
+                await disconnect();
+            }
+        });
+    </script>
+</body>
+</html> 

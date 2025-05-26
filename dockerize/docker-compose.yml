@@ -1,0 +1,23 @@
+services:
+  webrtc-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: webrtc-jam-combined
+    env_file:
+      - .env
+    environment:
+      - PULSE_SERVER=unix:/tmp/pulse_socket
+      - PORT=${PORT:-8000}
+    volumes:
+      - ${XDG_RUNTIME_DIR}/pulse/native:/tmp/pulse_socket
+      - ${HOME}/.config/pulse/cookie:/root/.config/pulse/cookie
+    devices:
+      - /dev/snd:/dev/snd
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    group_add:
+      - audio
+    network_mode: "host"
+    user: "1000:1000"
